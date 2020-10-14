@@ -17,6 +17,8 @@
 #include "shell/browser/mac/dict_util.h"
 #import "shell/browser/mac/electron_application.h"
 
+#import <UserNotifications/UserNotifications.h>
+
 #if BUILDFLAG(USE_ALLOCATOR_SHIM)
 // On macOS 10.12, the IME system attempts to allocate a 2^64 size buffer,
 // which would typically cause an OOM crash. To avoid this, the problematic
@@ -40,6 +42,47 @@ static base::mac::ScopedObjCClassSwizzler* g_swizzle_imk_input_session;
 }
 @end
 #endif  // BUILDFLAG(USE_ALLOCATOR_SHIM)
+
+static NSDictionary* UNNotificationRequestToNSDictionary(
+    UNNotificationRequest* request) API_AVAILABLE(macosx(10.14)) {
+  DCHECK(request);
+
+  NSMutableDictionary* result = [[NSMutableDictionary alloc] init];
+  result[@"identifier"] = request.identifier;
+  result[@"content"] = request.content.userInfo;
+
+  return result;
+}
+
+static NSDictionary* UNNotificationToNSDictionary(UNNotification* notification)
+    API_AVAILABLE(macosx(10.14)) {
+  DCHECK(notification);
+
+  NSMutableDictionary* result = [[NSMutableDictionary alloc] init];
+  result[@"date"] = notification.date;
+  result[@"request"] =
+      UNNotificationRequestToNSDictionary(notification.request);
+
+  return result;
+}
+
+static NSDictionary* UNNotificationResponseToNSDictionary(
+    UNNotificationResponse* response) API_AVAILABLE(macosx(10.14)) {
+  if (!response) {
+    return nil;
+  }
+
+  NSMutableDictionary* result = [[NSMutableDictionary alloc] init];
+  result[@"actionIdentifier"] = response.actionIdentifier;
+  result[@"notification"] = UNNotificationToNSDictionary(response.notification);
+
+  if ([response isKindOfClass:[UNTextInputNotificationResponse class]]) {
+    result[@"userText"] =
+        static_cast<UNTextInputNotificationResponse*>(response).userText;
+  }
+
+  return result;
+}
 
 @implementation ElectronApplicationDelegate
 
@@ -68,12 +111,25 @@ static base::mac::ScopedObjCClassSwizzler* g_swizzle_imk_input_session;
 }
 
 - (void)applicationDidFinishLaunching:(NSNotification*)notify {
-  NSUserNotification* user_notification =
+  NSObject* user_notification =
       [notify userInfo][NSApplicationLaunchUserNotificationKey];
+  NSDictionary* notification_info = nil;
 
-  if ([user_notification isKindOfClass:[NSUserNotification class]]) {
+  if (user_notification) {
+    if ([user_notification isKindOfClass:[NSUserNotification class]]) {
+      notification_info =
+          [static_cast<NSUserNotification*>(user_notification) userInfo];
+    } else if (@available(macOS 10.14, *)) {
+      if ([user_notification isKindOfClass:[UNNotificationResponse class]]) {
+        notification_info = UNNotificationResponseToNSDictionary(
+            static_cast<UNNotificationResponse*>(user_notification));
+      }
+    }
+  }
+
+  if (notification_info) {
     electron::Browser::Get()->DidFinishLaunching(
-        electron::NSDictionaryToDictionaryValue(user_notification.userInfo));
+        electron::NSDictionaryToDictionaryValue(notification_info));
   } else {
     electron::Browser::Get()->DidFinishLaunching(base::DictionaryValue());
   }
